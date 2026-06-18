@@ -14,18 +14,6 @@ fn hex_to_bytes(hex: &str) -> Vec<u8> {
         .collect()
 }
 
-fn format_uuid(uuid: &[u8; 16]) -> String {
-    let h = hex::encode(uuid);
-    format!(
-        "{}-{}-{}-{}-{}",
-        &h[0..8],
-        &h[8..12],
-        &h[12..16],
-        &h[16..20],
-        &h[20..32],
-    )
-}
-
 fn check(hash: &[u8]) -> bool {
     // 前 33 bit 全 0 = 前 4 字节全 0，并且第 5 字节最高 bit 为 0
     hash[0] == 0
@@ -38,31 +26,45 @@ fn check(hash: &[u8]) -> bool {
 fn worker(prefix_bytes: [u8; 4], found: Arc<AtomicBool>) {
     let mut rng = rand::thread_rng();
 
+    // 预先分配 UUID 的内部字节数组，并填入固定部分
+    let mut uuid = [0u8; 16];
+    uuid[0..4].copy_from_slice(&prefix_bytes);
+    uuid[12..16].copy_from_slice(&FIXED_SUFFIX);
+
+    // 预先准备好最终 36 字节的 UUID 字符串 Buffer
+    let mut out = *b"00000000-0000-0000-0000-000000000000";
+
+    // 初始化首尾固定的 Hex 字符
+    // 第一段: commit 后 8 位
+    hex::encode_to_slice(&uuid[0..4], &mut out[0..8]).unwrap();
+    // 末 8 位: 固定 ca010150
+    hex::encode_to_slice(&uuid[12..16], &mut out[28..36]).unwrap();
+
     while !found.load(Ordering::Relaxed) {
-        let mut uuid = [0u8; 16];
-        rng.fill_bytes(&mut uuid);
+        // 只随机化中间的字节（4..12）
+        rng.fill_bytes(&mut uuid[4..12]);
 
-        // 第一段固定为 commit 后 8 位
-        uuid[0..4].copy_from_slice(&prefix_bytes);
+        // 维持 UUIDv4 的特性
+        uuid[6] = (uuid[6] & 0x0f) | 0x40; // 第三段必须是 4xxx
+        uuid[8] = (uuid[8] & 0x3f) | 0x80; // 第四段必须是 yxxx，y = 8/9/a/b
 
-        // UUIDv4: 第三段必须是 4xxx
-        uuid[6] = (uuid[6] & 0x0f) | 0x40;
+        // 原地更新变动部分的 Hex 字符，零内存分配
+        hex::encode_to_slice(&uuid[4..6], &mut out[9..13]).unwrap();
+        hex::encode_to_slice(&uuid[6..8], &mut out[14..18]).unwrap();
+        hex::encode_to_slice(&uuid[8..10], &mut out[19..23]).unwrap();
+        hex::encode_to_slice(&uuid[10..12], &mut out[24..28]).unwrap();
 
-        // UUID variant: 第四段必须是 yxxx，y = 8/9/a/b
-        uuid[8] = (uuid[8] & 0x3f) | 0x80;
-
-        // 末 8 位固定 ca010150
-        uuid[12..16].copy_from_slice(&FIXED_SUFFIX);
-
-        let out = format_uuid(&uuid);
-
+        // 直接对字符数组进行 Hash，避免 String 转换开销
         let mut hasher = Sha512::new();
-        hasher.update(out.as_bytes());
+        hasher.update(&out);
         let result = hasher.finalize();
 
         if check(&result) {
+            // 如果成功找到，且是第一个找到的线程
             if !found.swap(true, Ordering::Relaxed) {
-                println!("/answer {}", out);
+                // 将结果字节数组转换为字符串打印
+                let answer = std::str::from_utf8(&out).unwrap();
+                println!("/answer {}", answer);
             }
             break;
         }
@@ -70,16 +72,20 @@ fn worker(prefix_bytes: [u8; 4], found: Arc<AtomicBool>) {
 }
 
 fn main() {
+    // 提取 commit 后 8 位
     let prefix = &COMMIT_HEX[COMMIT_HEX.len() - 8..];
     let prefix_vec = hex_to_bytes(prefix);
     let prefix_bytes: [u8; 4] = prefix_vec.try_into().unwrap();
 
     let cores = num_cpus::get();
-    println!("[*] commit suffix: {}", prefix);
-    println!("[*] using {} cores", cores);
+    println!("[*] Target prefix: {}", prefix);
+    println!("[*] Target suffix: ca010150");
+    println!("[*] Required PoW : 33 bits leading zero in SHA512");
+    println!("[*] Using {} cores for mining...", cores);
 
     let found = Arc::new(AtomicBool::new(false));
 
+    // 使用 rayon 并发利用所有核心
     (0..cores).into_par_iter().for_each(|_| {
         worker(prefix_bytes, found.clone());
     });
