@@ -54,9 +54,9 @@ fn worker(prefix_bytes: [u8; 4], found: Arc<AtomicBool>) {
         hex::encode_to_slice(&uuid[8..10], &mut out[19..23]).unwrap();
         hex::encode_to_slice(&uuid[10..12], &mut out[24..28]).unwrap();
 
-        // 直接对字符数组进行 Hash，避免 String 转换开销
+        // 对 UUID 原始 16 字节进行 Hash
         let mut hasher = Sha512::new();
-        hasher.update(&out);
+        hasher.update(&uuid);
         let result = hasher.finalize();
 
         if check(&result) {
