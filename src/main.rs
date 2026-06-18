@@ -1,33 +1,24 @@
 use rand::RngCore;
-use rayon::prelude::*;
 use sha2::{Digest, Sha512};
+use rayon::prelude::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-const COMMIT: &[u8] = &hex_literal::hex!(
-    "90243a7416f52151a8c6cecf633500dceb366895"
-);
+const COMMIT_HEX: &str = "90243a7416f52151a8c6cecf633500dceb366895";
 
-const PREFIX: &str = "eb366895";
-
-fn gen_uuid(mut b: [u8; 16]) -> [u8; 16] {
-    // UUIDv4 标准位
-    b[6] = (b[6] & 0x0F) | 0x40;
-    b[8] = (b[8] & 0x3F) | 0x80;
-    b
+fn hex_to_bytes(hex: &str) -> Vec<u8> {
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect()
 }
 
-fn check(h: &[u8]) -> bool {
-    // 前33 bit = 4 bytes + 1 bit
-    (u32::from_be_bytes([h[0], h[1], h[2], h[3]]) << 1)
-        | ((h[4] >> 7) as u32)
-        == 0
-}
-
-fn format(uuid: &[u8; 16]) -> String {
+fn format_uuid(uuid: &[u8; 16], prefix: &str) -> String {
     let hex = hex::encode(uuid);
 
     format!(
         "{}-{}-{}-{}-{}ca010150",
-        PREFIX,
+        prefix,
         &hex[0..4],
         &hex[4..8],
         &hex[8..12],
@@ -35,36 +26,48 @@ fn format(uuid: &[u8; 16]) -> String {
     )
 }
 
-fn worker() -> Option<String> {
+fn check(hash: &[u8]) -> bool {
+    // 前33 bit = 4 bytes + 1 bit
+    (u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) << 1
+        | (hash[4] >> 7) as u32)
+        == 0
+}
+
+fn worker(commit: Vec<u8>, prefix: String, found: Arc<AtomicBool>) {
     let mut rng = rand::thread_rng();
 
-    loop {
-        let mut b = [0u8; 16];
-        rng.fill_bytes(&mut b);
+    while !found.load(Ordering::Relaxed) {
+        let mut uuid = [0u8; 16];
+        rng.fill_bytes(&mut uuid);
 
-        let uuid = gen_uuid(b);
+        // UUIDv4 标准位
+        uuid[6] = (uuid[6] & 0x0F) | 0x40;
+        uuid[8] = (uuid[8] & 0x3F) | 0x80;
 
         let mut hasher = Sha512::new();
-        hasher.update(COMMIT);
+        hasher.update(&commit);
         hasher.update(uuid);
-        let hash = hasher.finalize();
+        let result = hasher.finalize();
 
-        if check(&hash) {
-            return Some(format(&uuid));
+        if check(&result) {
+            let out = format_uuid(&uuid, &prefix);
+            println!("/answer {}", out);
+            found.store(true, Ordering::Relaxed);
+            break;
         }
     }
 }
 
 fn main() {
-    let cores = num_cpus::get();
+    let commit = hex_to_bytes(COMMIT_HEX);
+    let prefix = &COMMIT_HEX[COMMIT_HEX.len() - 8..];
 
+    let cores = num_cpus::get();
     println!("[*] using {} cores", cores);
 
-    let result = (0..cores)
-        .into_par_iter()
-        .find_map_any(|_| worker());
+    let found = Arc::new(AtomicBool::new(false));
 
-    if let Some(ans) = result {
-        println!("/answer {}", ans);
-    }
+    (0..cores).into_par_iter().for_each(|_| {
+        worker(commit.clone(), prefix.to_string(), found.clone());
+    });
 }
