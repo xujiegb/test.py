@@ -14,21 +14,25 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          # ---------------- Linux AMD64 ----------------
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             name: linux-amd64
 
-          - os: ubuntu-latest
+          # ---------------- Linux ARM64 ----------------
+          - os: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
             name: linux-arm64
 
-          - os: macos-13
-            target: x86_64-apple-darwin
-            name: macos-amd64
-
-          - os: macos-14
+          # ---------------- macOS ARM64 ----------------
+          - os: macos-15
             target: aarch64-apple-darwin
             name: macos-arm64
+
+          # ---------------- macOS Intel ----------------
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            name: macos-amd64
 
     runs-on: ${{ matrix.os }}
 
@@ -41,17 +45,20 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install Linux cross tools (ARM64)
+      # ---------------- Linux ARM64 toolchain ----------------
+      - name: Install cross tools (ARM64 Linux)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      # ---------------- Build ----------------
       - name: Build
         run: |
           cargo build --release --target ${{ matrix.target }}
 
-      - name: Upload artifact (temp only)
+      # ---------------- Artifact ----------------
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
@@ -63,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
